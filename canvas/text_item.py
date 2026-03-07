@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QGraphicsTextItem, QGraphicsItem, QStyleOptionGraphicsItem, QStyle
 from PyQt6.QtGui import QFont, QColor, QPen
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QPointF
 
 
 class TextItem(QGraphicsTextItem):
@@ -13,7 +13,6 @@ class TextItem(QGraphicsTextItem):
     """
 
     DEFAULT_WIDTH = 220.0
-    PADDING = 6  # px de padding visual alrededor del texto
 
     def __init__(self, parent=None):
         super().__init__("Doble clic para editar", parent)
@@ -28,17 +27,21 @@ class TextItem(QGraphicsTextItem):
         self.setFont(QFont("Arial", 12))
         self.setDefaultTextColor(QColor("#111111"))
 
+        self._drag_start: QPointF | None = None
+        self._editing = False
+
     # ------------------------------------------------------------------ #
     #  Edición
     # ------------------------------------------------------------------ #
 
     def mouseDoubleClickEvent(self, event):
+        self._editing = True
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
         self.setFocus(Qt.FocusReason.MouseFocusReason)
         super().mouseDoubleClickEvent(event)
 
     def focusOutEvent(self, event):
-        # Salir del modo edición al perder el foco
+        self._editing = False
         self.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
         cursor = self.textCursor()
         cursor.clearSelection()
@@ -46,17 +49,36 @@ class TextItem(QGraphicsTextItem):
         super().focusOutEvent(event)
 
     # ------------------------------------------------------------------ #
+    #  Movimiento con tracking para Undo
+    # ------------------------------------------------------------------ #
+
+    def mousePressEvent(self, event):
+        if not self._editing:
+            self._drag_start = self.pos()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if not self._editing and self._drag_start is not None:
+            new_pos = self.pos()
+            if new_pos != self._drag_start and self.scene():
+                from canvas.commands import MoveItemCommand
+                cmd = MoveItemCommand(self, self._drag_start, new_pos)
+                self.scene().undo_stack.push(cmd)
+                self.scene().item_moved.emit(self)
+        self._drag_start = None
+
+    # ------------------------------------------------------------------ #
     #  Apariencia
     # ------------------------------------------------------------------ #
 
     def paint(self, painter, option, widget):
-        # Suprimir el recuadro de selección nativo de Qt (lo dibujamos nosotros)
         clean_option = QStyleOptionGraphicsItem(option)
         clean_option.state &= ~QStyle.StateFlag.State_Selected
 
         rect = self.boundingRect()
 
-        # Fondo amarillo pálido (aspecto de post-it / caja)
+        # Fondo amarillo pálido
         painter.fillRect(rect, QColor(255, 253, 210, 200))
 
         # Borde: azul punteado si seleccionado, gris claro si no
@@ -68,5 +90,4 @@ class TextItem(QGraphicsTextItem):
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
 
-        # Dibujar el texto por encima
         super().paint(painter, clean_option, widget)
