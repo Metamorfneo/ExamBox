@@ -103,22 +103,22 @@ class ExamCanvas(QGraphicsView):
 
 # -- Eventos --
 
-def KeyPressEvent(self , event):
-    if event.key() == Qt.Key.Key_Delete:
-        self.delete_selected()
-    else:
-        super().keyPressEvent(event)
+        def KeyPressEvent(self , event):
+            if event.key() == Qt.Key.Key_Delete:
+                self.delete_selected()
+            else:
+                super().keyPressEvent(event)
 
-def wheelEvent(self , event):
-    "Zoom con la rueda del raton"
-    delta = event.angleDelta().y()
-    factor = 1.15 if delta > 0 else 1 / 1.15
-    self.zoom_by(factor)
+        def wheelEvent(self , event):
+            "Zoom con la rueda del raton"
+            delta = event.angleDelta().y()
+            factor = 1.15 if delta > 0 else 1 / 1.15
+            self.zoom_by(factor)
 
 
 # --Auxiliares --
 
 
-def _center_in_scene(self):
-    """Devuelve el punto central de la vista"""
-    return self.mapToScene(self.viewport().rect().center())
+        def _center_in_scene(self):
+            """Devuelve el punto central de la vista"""
+            return self.mapToScene(self.viewport().rect().center())
