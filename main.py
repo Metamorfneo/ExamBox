@@ -1,7 +1,11 @@
 import sys
-from PyQt5.QtWidgets import QApplication
-from PyQt6.QtGui import QIcon
-from ui.main_window import MainWindow
+import os
+
+# Asegura que Python busca módulos desde la carpeta del proyecto
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from PyQt6.QtWidgets import QApplication
+from UI.main_window import MainWindow
 
 
 def main():
@@ -11,7 +15,6 @@ def main():
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
 
 
 if __name__ == "__main__":
