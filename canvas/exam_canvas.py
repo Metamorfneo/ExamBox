@@ -2,7 +2,7 @@ import os
 import json
 import base64
 
-from PyQt6.QtWidgets import QGraphicsView, QFileDialog, QMessageBox
+from PyQt6.QtWidgets import QGraphicsView, QFileDialog, QMessageBox, QApplication
 from PyQt6.QtGui import QPainter, QPixmap
 from PyQt6.QtCore import Qt, QRectF, QByteArray, QBuffer, QIODevice
 from PyQt6.QtPrintSupport import QPrinter
@@ -356,6 +356,28 @@ class ExamCanvas(QGraphicsView):
             if not any_moved:
                 break
 
+    def paste_from_clipboard(self):
+        """Pega una imagen del portapapeles como ImageItem."""
+        clipboard = QApplication.clipboard()
+        pixmap = clipboard.pixmap()
+
+        if pixmap.isNull():
+            return
+
+        # Reducir si es demasiado grande para la hoja
+        max_w = ExamScene.PAGE_W * 0.6
+        if pixmap.width() > max_w:
+            pixmap = pixmap.scaledToWidth(int(max_w), Qt.TransformationMode.SmoothTransformation)
+
+        item = ImageItem(pixmap)
+        pos = self._center_in_scene()
+        item.setPos(pos.x() - item.img_width / 2, pos.y() - item.img_height / 2)
+        cmd = AddItemCommand(self._scene, item)
+        self._scene.undo_stack.push(cmd)
+        self._scene.clearSelection()
+        item.setSelected(True)
+        self._resolve_overlaps(item)
+
     # ------------------------------------------------------------------ #
     #  Zoom
     # ------------------------------------------------------------------ #
@@ -384,6 +406,8 @@ class ExamCanvas(QGraphicsView):
                 self.undo()
             elif event.key() == Qt.Key.Key_Y:
                 self.redo()
+            elif event.key() == Qt.Key.Key_V:
+                self.paste_from_clipboard()
         else:
             super().keyPressEvent(event)
 
