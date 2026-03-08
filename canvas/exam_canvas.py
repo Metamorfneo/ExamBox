@@ -5,7 +5,6 @@ import base64
 from PyQt6.QtWidgets import QGraphicsView, QFileDialog, QMessageBox, QApplication
 from PyQt6.QtGui import QPainter, QPixmap, QPdfWriter, QPageSize
 from PyQt6.QtCore import Qt, QRectF, QByteArray, QBuffer, QIODevice
-from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 
 from canvas.exam_scene import ExamScene
 from canvas.text_item import TextItem
@@ -168,11 +167,8 @@ class ExamCanvas(QGraphicsView):
     # ------------------------------------------------------------------ #
 
     def save_pdf(self):
-        """Guarda el PDF. Si ya tiene ruta PDF, sobreescribe directamente."""
-        if self._current_file and self._current_file.endswith(".pdf"):
-            self._write_pdf(self._current_file)
-        else:
-            self.save_pdf_as()
+        """Siempre pregunta dónde guardar el PDF."""
+        self.save_pdf_as()
 
     def save_pdf_as(self):
         """Siempre abre el diálogo para elegir dónde guardar."""
@@ -184,11 +180,24 @@ class ExamCanvas(QGraphicsView):
             return
         if not path.endswith(".pdf"):
             path += ".pdf"
-        self._current_file = path
-        self._write_pdf(path)
+
+        if self._render_pdf(path):
+            # Guardar también el .exambox junto al PDF, sin mensajes extra
+            exambox_path = path.replace(".pdf", ".exambox")
+            self._write_exambox(exambox_path, silent=True)
+            self._current_file = path
+            self._update_window_title(path)
+            QMessageBox.information(
+                self, "PDF guardado",
+                f"PDF guardado en:\n{path}\n\nProyecto editable guardado en:\n{exambox_path}"
+            )
 
     def _write_pdf(self, path: str):
-        """Renderiza todas las hojas usando QPdfWriter (no necesita QtPrintSupport)."""
+        """Renderiza el PDF sin tocar el estado de la app (usado por imprimir)."""
+        self._render_pdf(path)
+
+    def _render_pdf(self, path: str) -> bool:
+        """Renderiza todas las hojas en un PDF. Devuelve True si tuvo éxito."""
         writer = QPdfWriter(path)
         writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
         writer.setResolution(150)
@@ -196,7 +205,7 @@ class ExamCanvas(QGraphicsView):
         painter = QPainter()
         if not painter.begin(writer):
             QMessageBox.critical(self, "Error al guardar", "No se pudo crear el archivo PDF.")
-            return
+            return False
 
         selected = self._scene.selectedItems()
         for item in selected:
@@ -215,41 +224,31 @@ class ExamCanvas(QGraphicsView):
         for item in selected:
             item.setSelected(True)
 
-        self._update_window_title(path)
-        QMessageBox.information(self, "PDF guardado", f"Guardado correctamente en:\n{path}")
+        return True
 
     def print_exam(self):
-        """Abre el diálogo de impresora del sistema e imprime todas las hojas."""
-        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setPageSize(QPrinter.PageSize.A4)
+        """
+        Genera un PDF temporal y lo abre con el visor de Windows,
+        que incluye botón de imprimir. Evita usar QtPrintSupport.
+        """
+        import tempfile
+        import subprocess
 
-        dialog = QPrintDialog(printer, self)
-        dialog.setWindowTitle("Imprimir examen")
-        if dialog.exec() != QPrintDialog.DialogCode.Accepted:
-            return  # el usuario canceló
+        # Crear PDF temporal en la carpeta temp del sistema
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".pdf", prefix="ExamBox_print_", delete=False
+        )
+        tmp_path = tmp.name
+        tmp.close()
 
-        painter = QPainter()
-        if not painter.begin(printer):
-            QMessageBox.critical(self, "Error al imprimir", "No se pudo conectar con la impresora.")
-            return
+        # Renderizar el PDF temporal
+        self._write_pdf(tmp_path)
 
-        # Ocultar selección para que no aparezca en el impreso
-        selected = self._scene.selectedItems()
-        for item in selected:
-            item.setSelected(False)
-
-        target = QRectF(printer.pageRect(QPrinter.Unit.DevicePixel))
-
-        for i in range(self._scene.num_pages):
-            if i > 0:
-                printer.newPage()
-            source = self._scene.page_rect(i)
-            self._scene.render(painter, target, source)
-
-        painter.end()
-
-        for item in selected:
-            item.setSelected(True)
+        # Abrir con el visor de PDF predeterminado de Windows
+        try:
+            subprocess.Popen(["start", "", tmp_path], shell=True)
+        except Exception as e:
+            QMessageBox.critical(self, "Error al imprimir", f"No se pudo abrir el PDF:\n{e}")
 
     # ------------------------------------------------------------------ #
     #  Guardar / cargar proyecto editable (.exambox)
@@ -274,36 +273,47 @@ class ExamCanvas(QGraphicsView):
         self._current_file = path
         self._write_exambox(path)
 
-    def _write_exambox(self, path: str):
+    def _write_exambox(self, path: str, silent: bool = False):
+        """
+        Serializa la escena en un .exambox.
+        silent=True: no muestra mensajes ni cambia el título (usado al guardar junto al PDF).
+        """
         data = {
             "version": self.FILE_VERSION,
             "num_pages": self._scene.num_pages,
             "items": [],
         }
         for item in self._scene.items():
-            if isinstance(item, TextItem):
-                data["items"].append({
-                    "type": "text",
-                    "x": item.x(), "y": item.y(),
-                    "width": item.textWidth(),
-                    "text": item.toPlainText(),
-                    "font_size": item.font().pointSize(),
-                })
-            elif isinstance(item, ImageItem):
-                data["items"].append({
-                    "type": "image",
-                    "x": item.x(), "y": item.y(),
-                    "width": item.img_width,
-                    "height": item.img_height,
-                    "data": self._pixmap_to_base64(item.pixmap()),
-                })
+            try:
+                item_type = type(item).__name__
+                if item_type == "TextItem":
+                    data["items"].append({
+                        "type": "text",
+                        "x": item.x(), "y": item.y(),
+                        "width": item.textWidth(),
+                        "text": item.toPlainText(),
+                        "font_size": item.font().pointSize(),
+                    })
+                elif item_type == "ImageItem":
+                    data["items"].append({
+                        "type": "image",
+                        "x": item.x(), "y": item.y(),
+                        "width": item.img_width,
+                        "height": item.img_height,
+                        "data": self._pixmap_to_base64(item.pixmap()),
+                    })
+            except Exception as e:
+                QMessageBox.critical(self, "Error al serializar elemento", str(e))
+                return
+
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            self._update_window_title(path)
-            QMessageBox.information(self, "Proyecto guardado", f"Guardado correctamente en:\n{path}")
+            if not silent:
+                self._update_window_title(path)
+                QMessageBox.information(self, "Proyecto guardado", f"Guardado correctamente en:\n{path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error al guardar", str(e))
+            QMessageBox.critical(self, "Error al guardar proyecto", str(e))
 
     def load_project(self):
         path, _ = QFileDialog.getOpenFileName(
