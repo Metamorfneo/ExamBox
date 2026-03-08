@@ -358,12 +358,7 @@ class ExamCanvas(QGraphicsView):
                         item.setPos(item_data["x"], item_data["y"])
                         self._scene.addItem(item)
             except Exception as e:
-                QMessageBox.warning(self, "Error al cargar elemento", str(e))
-
-        QMessageBox.information(self , "Debug",
-                                f"items en json: {len(data.get('items', []))}\n"
-                                f"items en escena: {len(self._scene.items())}"
-                                )        
+                QMessageBox.warning(self, "Error al cargar elemento", str(e))       
         
         self._current_file = path
         self._update_window_title(path)
