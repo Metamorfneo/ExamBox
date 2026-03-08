@@ -73,29 +73,29 @@ class MainWindow(QMainWindow):
         new_exam.triggered.connect(self.canvas.new_exam)
         tb.addAction(new_exam)
 
-        open_exam = QAction("📂  Abrir", self)
+        open_exam = QAction("📂  Abrir proyecto", self)
         open_exam.setShortcut(QKeySequence("Ctrl+O"))
-        open_exam.setStatusTip("Abrir examen guardado (Ctrl+O)")
-        open_exam.triggered.connect(self.canvas.load)
+        open_exam.setStatusTip("Abrir proyecto .exambox para seguir editando (Ctrl+O)")
+        open_exam.triggered.connect(self.canvas.load_project)
         tb.addAction(open_exam)
 
-        save_exam = QAction("💾  Guardar", self)
-        save_exam.setShortcut(QKeySequence("Ctrl+S"))
-        save_exam.setStatusTip("Guardar examen (Ctrl+S)")
-        save_exam.triggered.connect(self.canvas.save)
-        tb.addAction(save_exam)
+        save_project = QAction("🗂️  Guardar proyecto", self)
+        save_project.setShortcut(QKeySequence("Ctrl+Shift+S"))
+        save_project.setStatusTip("Guardar proyecto editable .exambox (Ctrl+Shift+S)")
+        save_project.triggered.connect(self.canvas.save_project)
+        tb.addAction(save_project)
 
-        save_as_exam = QAction("💾  Guardar como", self)
-        save_as_exam.setShortcut(QKeySequence("Ctrl+Shift+S"))
-        save_as_exam.setStatusTip("Guardar examen como... (Ctrl+Shift+S)")
-        save_as_exam.triggered.connect(self.canvas.save_as)
-        tb.addAction(save_as_exam)
+        save_pdf = QAction("📄  Guardar PDF", self)
+        save_pdf.setShortcut(QKeySequence("Ctrl+S"))
+        save_pdf.setStatusTip("Guardar el examen como PDF (Ctrl+S)")
+        save_pdf.triggered.connect(self.canvas.save_pdf)
+        tb.addAction(save_pdf)
 
-        export_pdf = QAction("📄  Exportar PDF", self)
-        export_pdf.setShortcut(QKeySequence("Ctrl+E"))
-        export_pdf.setStatusTip("Exportar el examen como PDF (Ctrl+E)")
-        export_pdf.triggered.connect(self.canvas.export_pdf)
-        tb.addAction(export_pdf)
+        print_exam = QAction("🖨️  Imprimir", self)
+        print_exam.setShortcut(QKeySequence("Ctrl+P"))
+        print_exam.setStatusTip("Imprimir el examen (Ctrl+P)")
+        print_exam.triggered.connect(self.canvas.print_exam)
+        tb.addAction(print_exam)
 
         tb.addSeparator()
 
@@ -184,8 +184,8 @@ class MainWindow(QMainWindow):
         bar = self.statusBar()
         bar.setStyleSheet("background: #2b2b2b; color: #aaaaaa; font-size: 12px;")
         bar.showMessage(
-            "Listo  ·  📝 Doble clic para editar texto  "
-            "·  ↩↪ Ctrl+Z / Ctrl+Y para deshacer/rehacer  "
-            "·  ⬜ Sin superposición empuja elementos al moverlos  "
-            "·  Supr para eliminar  ·  Ctrl+S guardar  ·  Ctrl+E PDF"
+            "Listo  ·  📄 Ctrl+S guarda PDF  "
+            "·  🗂️ Ctrl+Shift+S guarda proyecto editable  "
+            "·  ↩↪ Ctrl+Z / Ctrl+Y deshacer/rehacer  "
+            "·  Supr eliminar  ·  Ctrl+V pegar imagen"
         )

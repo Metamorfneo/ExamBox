@@ -3,9 +3,9 @@ import json
 import base64
 
 from PyQt6.QtWidgets import QGraphicsView, QFileDialog, QMessageBox, QApplication
-from PyQt6.QtGui import QPainter, QPixmap
+from PyQt6.QtGui import QPainter, QPixmap, QPdfWriter, QPageSize
 from PyQt6.QtCore import Qt, QRectF, QByteArray, QBuffer, QIODevice
-from PyQt6.QtPrintSupport import QPrinter
+from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 
 from canvas.exam_scene import ExamScene
 from canvas.text_item import TextItem
@@ -14,16 +14,11 @@ from canvas.commands import AddItemCommand, DeleteItemsCommand
 
 
 class ExamCanvas(QGraphicsView):
-    """
-    Vista principal del examen.
-    Gestiona zoom, adición, eliminación, guardado, carga, undo/redo
-    y el modo sin superposición.
-    """
 
     ZOOM_MIN = 0.2
     ZOOM_MAX = 4.0
     FILE_VERSION = 1
-    OVERLAP_MARGIN = 10  # px de espacio mínimo entre elementos en modo sin superposición
+    OVERLAP_MARGIN = 10
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -44,11 +39,10 @@ class ExamCanvas(QGraphicsView):
         self._current_file: str | None = None
         self._no_overlap = False
 
-        # Escuchar cuando un item se mueve para resolver superposiciones
         self._scene.item_moved.connect(self._on_item_moved)
 
     # ------------------------------------------------------------------ #
-    #  Propiedades de modo
+    #  Propiedades
     # ------------------------------------------------------------------ #
 
     @property
@@ -102,11 +96,26 @@ class ExamCanvas(QGraphicsView):
         pixmap = QPixmap(path)
         if pixmap.isNull():
             return
-
         max_w = ExamScene.PAGE_W * 0.6
         if pixmap.width() > max_w:
             pixmap = pixmap.scaledToWidth(int(max_w), Qt.TransformationMode.SmoothTransformation)
+        item = ImageItem(pixmap)
+        pos = self._center_in_scene()
+        item.setPos(pos.x() - item.img_width / 2, pos.y() - item.img_height / 2)
+        cmd = AddItemCommand(self._scene, item)
+        self._scene.undo_stack.push(cmd)
+        self._scene.clearSelection()
+        item.setSelected(True)
+        self._resolve_overlaps(item)
 
+    def paste_from_clipboard(self):
+        clipboard = QApplication.clipboard()
+        pixmap = clipboard.pixmap()
+        if pixmap.isNull():
+            return
+        max_w = ExamScene.PAGE_W * 0.6
+        if pixmap.width() > max_w:
+            pixmap = pixmap.scaledToWidth(int(max_w), Qt.TransformationMode.SmoothTransformation)
         item = ImageItem(pixmap)
         pos = self._center_in_scene()
         item.setPos(pos.x() - item.img_width / 2, pos.y() - item.img_height / 2)
@@ -131,40 +140,146 @@ class ExamCanvas(QGraphicsView):
     # ------------------------------------------------------------------ #
 
     def add_page(self):
-        """Añade una nueva hoja en blanco debajo de las existentes."""
         self._scene.add_page()
         new_page_top = self._scene.page_top(self._scene.num_pages - 1)
         self.ensureVisible(0, new_page_top, ExamScene.PAGE_W, ExamScene.PAGE_H, 40, 40)
 
     # ------------------------------------------------------------------ #
-    #  Guardar
+    #  Nuevo examen
     # ------------------------------------------------------------------ #
 
-    def save(self):
-        if self._current_file:
-            self._write_file(self._current_file)
-        else:
-            self.save_as()
+    def new_exam(self):
+        reply = QMessageBox.question(
+            self, "Nuevo examen",
+            "¿Seguro que quieres empezar un examen nuevo?\nSe perderán los cambios no guardados.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._scene.clear()
+            self._scene.undo_stack.clear()
+            self._scene._num_pages = 1
+            self._scene._update_scene_rect()
+            self._scene.update()
+            self._current_file = None
+            self._update_window_title(None)
 
-    def save_as(self):
+    # ------------------------------------------------------------------ #
+    #  Guardar como PDF (flujo principal — Ctrl+S)
+    # ------------------------------------------------------------------ #
+
+    def save_pdf(self):
+        """Guarda el PDF. Si ya tiene ruta PDF, sobreescribe directamente."""
+        if self._current_file and self._current_file.endswith(".pdf"):
+            self._write_pdf(self._current_file)
+        else:
+            self.save_pdf_as()
+
+    def save_pdf_as(self):
+        """Siempre abre el diálogo para elegir dónde guardar."""
         path, _ = QFileDialog.getSaveFileName(
-            self, "Guardar examen", "",
-            "Examen ExamBox (*.exambox);;Todos los archivos (*)",
+            self, "Guardar como PDF", "",
+            "Archivo PDF (*.pdf);;Todos los archivos (*)",
+        )
+        if not path:
+            return
+        if not path.endswith(".pdf"):
+            path += ".pdf"
+        self._current_file = path
+        self._write_pdf(path)
+
+    def _write_pdf(self, path: str):
+        """Renderiza todas las hojas usando QPdfWriter (no necesita QtPrintSupport)."""
+        writer = QPdfWriter(path)
+        writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        writer.setResolution(150)
+
+        painter = QPainter()
+        if not painter.begin(writer):
+            QMessageBox.critical(self, "Error al guardar", "No se pudo crear el archivo PDF.")
+            return
+
+        selected = self._scene.selectedItems()
+        for item in selected:
+            item.setSelected(False)
+
+        target = QRectF(0, 0, writer.width(), writer.height())
+
+        for i in range(self._scene.num_pages):
+            if i > 0:
+                writer.newPage()
+            source = self._scene.page_rect(i)
+            self._scene.render(painter, target, source)
+
+        painter.end()
+
+        for item in selected:
+            item.setSelected(True)
+
+        self._update_window_title(path)
+        QMessageBox.information(self, "PDF guardado", f"Guardado correctamente en:\n{path}")
+
+    def print_exam(self):
+        """Abre el diálogo de impresora del sistema e imprime todas las hojas."""
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setPageSize(QPrinter.PageSize.A4)
+
+        dialog = QPrintDialog(printer, self)
+        dialog.setWindowTitle("Imprimir examen")
+        if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+            return  # el usuario canceló
+
+        painter = QPainter()
+        if not painter.begin(printer):
+            QMessageBox.critical(self, "Error al imprimir", "No se pudo conectar con la impresora.")
+            return
+
+        # Ocultar selección para que no aparezca en el impreso
+        selected = self._scene.selectedItems()
+        for item in selected:
+            item.setSelected(False)
+
+        target = QRectF(printer.pageRect(QPrinter.Unit.DevicePixel))
+
+        for i in range(self._scene.num_pages):
+            if i > 0:
+                printer.newPage()
+            source = self._scene.page_rect(i)
+            self._scene.render(painter, target, source)
+
+        painter.end()
+
+        for item in selected:
+            item.setSelected(True)
+
+    # ------------------------------------------------------------------ #
+    #  Guardar / cargar proyecto editable (.exambox)
+    # ------------------------------------------------------------------ #
+
+    def save_project(self):
+        """Guarda en .exambox para poder editar después."""
+        if self._current_file and self._current_file.endswith(".exambox"):
+            self._write_exambox(self._current_file)
+        else:
+            self.save_project_as()
+
+    def save_project_as(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Guardar proyecto editable", "",
+            "Proyecto ExamBox (*.exambox);;Todos los archivos (*)",
         )
         if not path:
             return
         if not path.endswith(".exambox"):
             path += ".exambox"
         self._current_file = path
-        self._write_file(path)
+        self._write_exambox(path)
 
-    def _write_file(self, path: str):
+    def _write_exambox(self, path: str):
         data = {
             "version": self.FILE_VERSION,
             "num_pages": self._scene.num_pages,
             "items": [],
         }
-
         for item in self._scene.items():
             if isinstance(item, TextItem):
                 data["items"].append({
@@ -182,28 +297,21 @@ class ExamCanvas(QGraphicsView):
                     "height": item.img_height,
                     "data": self._pixmap_to_base64(item.pixmap()),
                 })
-
         try:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             self._update_window_title(path)
+            QMessageBox.information(self, "Proyecto guardado", f"Guardado correctamente en:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Error al guardar", str(e))
 
-    # ------------------------------------------------------------------ #
-    #  Cargar
-    # ------------------------------------------------------------------ #
-
-    def load(self):
+    def load_project(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Abrir examen", "",
-            "Examen ExamBox (*.exambox);;Todos los archivos (*)",
+            self, "Abrir proyecto", "",
+            "Proyecto ExamBox (*.exambox);;Todos los archivos (*)",
         )
         if not path:
             return
-        self._read_file(path)
-
-    def _read_file(self, path: str):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -213,8 +321,9 @@ class ExamCanvas(QGraphicsView):
 
         self._scene.clear()
         self._scene.undo_stack.clear()
+        self._scene._num_pages = 1
+        self._scene._update_scene_rect()
 
-        # Restaurar número de páginas
         num_pages = data.get("num_pages", 1)
         for _ in range(num_pages - 1):
             self._scene.add_page()
@@ -242,141 +351,34 @@ class ExamCanvas(QGraphicsView):
         self._update_window_title(path)
 
     # ------------------------------------------------------------------ #
-    #  Nuevo examen
-    # ------------------------------------------------------------------ #
-
-    def new_exam(self):
-        reply = QMessageBox.question(
-            self, "Nuevo examen",
-            "¿Seguro que quieres empezar un examen nuevo?\nSe perderán los cambios no guardados.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self._scene.clear()
-            self._scene.undo_stack.clear()
-            self._scene._num_pages = 1
-            self._scene._update_scene_rect()
-            self._scene.update()
-            self._current_file = None
-            self._update_window_title(None)
-
-    # ------------------------------------------------------------------ #
-    #  Exportar PDF
-    # ------------------------------------------------------------------ #
-
-    def export_pdf(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Exportar como PDF", "",
-            "Archivo PDF (*.pdf);;Todos los archivos (*)",
-        )
-        if not path:
-            return
-        if not path.endswith(".pdf"):
-            path += ".pdf"
-
-        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
-        printer.setOutputFileName(path)
-        printer.setPageSize(QPrinter.PageSize.A4)
-        printer.setFullPage(True)
-
-        painter = QPainter()
-        if not painter.begin(printer):
-            QMessageBox.critical(self, "Error al exportar", "No se pudo crear el archivo PDF.")
-            return
-
-        # Ocultar selección para que no aparezca en el PDF
-        selected = self._scene.selectedItems()
-        for item in selected:
-            item.setSelected(False)
-
-        target = QRectF(printer.pageRect(QPrinter.Unit.DevicePixel))
-
-        for i in range(self._scene.num_pages):
-            if i > 0:
-                printer.newPage()
-            source = self._scene.page_rect(i)
-            self._scene.render(painter, target, source)
-
-        painter.end()
-
-        for item in selected:
-            item.setSelected(True)
-
-        QMessageBox.information(
-            self, "PDF exportado",
-            f"El examen se ha guardado correctamente en:\n{path}",
-        )
-
-    # ------------------------------------------------------------------ #
     #  Sin superposición
     # ------------------------------------------------------------------ #
 
     def _on_item_moved(self, moved_item):
-        """Llamado automáticamente cuando un item termina de moverse."""
         self._resolve_overlaps(moved_item)
 
     def _resolve_overlaps(self, moved_item):
-        """
-        Si el modo sin superposición está activo, empuja los elementos
-        hacia abajo para que no se superpongan con moved_item ni entre sí.
-        """
         if not self._no_overlap:
             return
-
         MAX_ITERATIONS = 40
         MARGIN = self.OVERLAP_MARGIN
-
         for _ in range(MAX_ITERATIONS):
             any_moved = False
-
-            # Ordenar todos los items de arriba a abajo
-            items = [
-                i for i in self._scene.items()
-                if isinstance(i, (TextItem, ImageItem))
-            ]
+            items = [i for i in self._scene.items() if isinstance(i, (TextItem, ImageItem))]
             items.sort(key=lambda i: i.sceneBoundingRect().top())
-
             for i, item_a in enumerate(items):
                 rect_a = item_a.sceneBoundingRect()
-
                 for item_b in items[i + 1:]:
                     rect_b = item_b.sceneBoundingRect()
-
-                    # Solo empujar si hay solapamiento horizontal también
                     h_overlap = rect_a.right() > rect_b.left() and rect_a.left() < rect_b.right()
                     v_overlap = rect_a.bottom() > rect_b.top()
-
                     if h_overlap and v_overlap:
                         push = rect_a.bottom() - rect_b.top() + MARGIN
                         if push > 0:
                             item_b.setPos(item_b.x(), item_b.y() + push)
                             any_moved = True
-
             if not any_moved:
                 break
-
-    def paste_from_clipboard(self):
-        """Pega una imagen del portapapeles como ImageItem."""
-        clipboard = QApplication.clipboard()
-        pixmap = clipboard.pixmap()
-
-        if pixmap.isNull():
-            return
-
-        # Reducir si es demasiado grande para la hoja
-        max_w = ExamScene.PAGE_W * 0.6
-        if pixmap.width() > max_w:
-            pixmap = pixmap.scaledToWidth(int(max_w), Qt.TransformationMode.SmoothTransformation)
-
-        item = ImageItem(pixmap)
-        pos = self._center_in_scene()
-        item.setPos(pos.x() - item.img_width / 2, pos.y() - item.img_height / 2)
-        cmd = AddItemCommand(self._scene, item)
-        self._scene.undo_stack.push(cmd)
-        self._scene.clearSelection()
-        item.setSelected(True)
-        self._resolve_overlaps(item)
 
     # ------------------------------------------------------------------ #
     #  Zoom
@@ -395,7 +397,7 @@ class ExamCanvas(QGraphicsView):
         self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     # ------------------------------------------------------------------ #
-    #  Eventos de teclado
+    #  Eventos
     # ------------------------------------------------------------------ #
 
     def keyPressEvent(self, event):
@@ -408,6 +410,8 @@ class ExamCanvas(QGraphicsView):
                 self.redo()
             elif event.key() == Qt.Key.Key_V:
                 self.paste_from_clipboard()
+            elif event.key() == Qt.Key.Key_S:
+                self.save_pdf()
         else:
             super().keyPressEvent(event)
 
