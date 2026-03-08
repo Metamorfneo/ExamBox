@@ -39,6 +39,30 @@ class ExamScene(QGraphicsScene):
         self._update_scene_rect()
         self.update()
 
+    def delete_page(self, page_index: int):
+        """Elimina una página y todos los elementos que contiene."""
+        if self._num_pages <= 1:
+            return  # no se puede borrar la única página
+
+        page_top = self.page_top(page_index)
+        page_bottom = page_top + self.PAGE_H
+
+        # Eliminar todos los items dentro del rango Y de esa página
+        for item in list(self.items()):
+            y = item.y()
+            if page_top <= y < page_bottom:
+                self.removeItem(item)
+
+        # Desplazar hacia arriba los items de páginas posteriores
+        shift = self.PAGE_H + self.PAGE_GAP
+        for item in self.items():
+            if item.y() >= page_bottom:
+                item.setY(item.y() - shift)
+
+        self._num_pages -= 1
+        self._update_scene_rect()
+        self.update()
+
     def page_top(self, page_index: int) -> float:
         """Coordenada Y superior de la página indicada (base 0)."""
         return page_index * (self.PAGE_H + self.PAGE_GAP)

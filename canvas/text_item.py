@@ -1,17 +1,9 @@
 from PyQt6.QtWidgets import QGraphicsTextItem, QGraphicsItem, QStyleOptionGraphicsItem, QStyle
-from PyQt6.QtGui import QFont, QColor, QPen
+from PyQt6.QtGui import QFont, QColor, QPen, QFontMetrics
 from PyQt6.QtCore import Qt, QPointF
 
 
 class TextItem(QGraphicsTextItem):
-    """
-    Caja de texto movible y editable.
-
-    - Clic simple: seleccionar / mover.
-    - Doble clic: entrar en modo edición.
-    - Clic fuera: salir del modo edición.
-    """
-
     DEFAULT_WIDTH = 220.0
 
     def __init__(self, parent=None):
@@ -29,15 +21,34 @@ class TextItem(QGraphicsTextItem):
 
         self._drag_start: QPointF | None = None
         self._editing = False
+        self._locked = False
+
+    # ------------------------------------------------------------------ #
+    #  Bloqueo
+    # ------------------------------------------------------------------ #
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    @locked.setter
+    def locked(self, value: bool):
+        self._locked = value
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not value)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, not value)
+        self.update()
 
     # ------------------------------------------------------------------ #
     #  Edición
     # ------------------------------------------------------------------ #
 
     def mouseDoubleClickEvent(self, event):
+        if self._locked:
+            return
         self._editing = True
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
         self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.update()
         super().mouseDoubleClickEvent(event)
 
     def focusOutEvent(self, event):
@@ -46,10 +57,11 @@ class TextItem(QGraphicsTextItem):
         cursor = self.textCursor()
         cursor.clearSelection()
         self.setTextCursor(cursor)
+        self.update()
         super().focusOutEvent(event)
 
     # ------------------------------------------------------------------ #
-    #  Movimiento con tracking para Undo
+    #  Movimiento con Undo
     # ------------------------------------------------------------------ #
 
     def mousePressEvent(self, event):
@@ -78,16 +90,27 @@ class TextItem(QGraphicsTextItem):
 
         rect = self.boundingRect()
 
-        # Fondo amarillo pálido
-        painter.fillRect(rect, QColor(255, 253, 210, 200))
-
-        # Borde: azul punteado si seleccionado, gris claro si no
-        if self.isSelected():
+        if self._locked:
+            # Fondo rayado muy sutil para indicar que está bloqueado
+            painter.fillRect(rect, QColor(255, 200, 100, 30))
+            pen = QPen(QColor("#E0A000"), 1.0, Qt.PenStyle.DotLine)
+        elif self._editing:
+            painter.fillRect(rect, QColor(210, 230, 255, 180))
+            pen = QPen(QColor("#4A90D9"), 1.5, Qt.PenStyle.SolidLine)
+        elif self.isSelected():
+            painter.fillRect(rect, QColor(0, 0, 0, 10))
             pen = QPen(QColor("#4A90D9"), 1.5, Qt.PenStyle.DashLine)
         else:
-            pen = QPen(QColor("#CCCCCC"), 1.0, Qt.PenStyle.SolidLine)
+            pen = QPen(QColor(0, 0, 0, 0))
+
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+
+        # Icono de candado si está bloqueado
+        if self._locked:
+            painter.setPen(QPen(QColor("#E0A000"), 1))
+            painter.setFont(QFont("Arial", 8))
+            painter.drawText(rect.adjusted(2, 2, -2, -2), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight, "🔒")
 
         super().paint(painter, clean_option, widget)

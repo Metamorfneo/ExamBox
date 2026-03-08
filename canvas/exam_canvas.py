@@ -3,8 +3,8 @@ import json
 import base64
 
 from PyQt6.QtWidgets import QGraphicsView, QFileDialog, QMessageBox, QApplication
-from PyQt6.QtGui import QPainter, QPixmap, QPdfWriter, QPageSize
-from PyQt6.QtCore import Qt, QRectF, QByteArray, QBuffer, QIODevice
+from PyQt6.QtGui import QPainter, QPixmap, QPdfWriter, QPageSize, QFont
+from PyQt6.QtCore import Qt, QRectF, QByteArray, QBuffer, QIODevice, QTimer
 
 from canvas.exam_scene import ExamScene
 from canvas.text_item import TextItem
@@ -18,6 +18,7 @@ class ExamCanvas(QGraphicsView):
     ZOOM_MAX = 4.0
     FILE_VERSION = 1
     OVERLAP_MARGIN = 10
+    AUTOSAVE_INTERVAL_MS = 2 * 60 * 1000  # 2 minutos
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -40,6 +41,12 @@ class ExamCanvas(QGraphicsView):
 
         self._scene.item_moved.connect(self._on_item_moved)
 
+        # Autosave
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setInterval(self.AUTOSAVE_INTERVAL_MS)
+        self._autosave_timer.timeout.connect(self._autosave)
+        self._autosave_timer.start()
+
     # ------------------------------------------------------------------ #
     #  Propiedades
     # ------------------------------------------------------------------ #
@@ -60,6 +67,9 @@ class ExamCanvas(QGraphicsView):
     def show_grid(self, value: bool):
         self._scene.show_grid = value
         self._scene.update()
+
+    def scene(self):
+        return self._scene
 
     # ------------------------------------------------------------------ #
     #  Undo / Redo
@@ -129,10 +139,65 @@ class ExamCanvas(QGraphicsView):
     # ------------------------------------------------------------------ #
 
     def delete_selected(self):
-        items = self._scene.selectedItems()
+        items = [i for i in self._scene.selectedItems() if not i.locked]
         if items:
             cmd = DeleteItemsCommand(self._scene, items)
             self._scene.undo_stack.push(cmd)
+
+    # ------------------------------------------------------------------ #
+    #  Bloquear / desbloquear
+    # ------------------------------------------------------------------ #
+
+    def toggle_lock_selected(self):
+        """Bloquea los seleccionados si están desbloqueados, o desbloquea si están bloqueados."""
+        items = self._scene.selectedItems()
+        if not items:
+            return
+        # Si alguno está desbloqueado, bloquear todos; si todos bloqueados, desbloquear
+        all_locked = all(getattr(i, "locked", False) for i in items)
+        for item in items:
+            if hasattr(item, "locked"):
+                item.locked = not all_locked
+        self._scene.update()
+
+    # ------------------------------------------------------------------ #
+    #  Fuente (solo para TextItem)
+    # ------------------------------------------------------------------ #
+
+    def set_font_family(self, family: str):
+        for item in self._scene.selectedItems():
+            if isinstance(item, TextItem):
+                f = item.font()
+                f.setFamily(family)
+                item.setFont(f)
+
+    def set_font_size(self, size: int):
+        for item in self._scene.selectedItems():
+            if isinstance(item, TextItem):
+                f = item.font()
+                f.setPointSize(max(6, size))
+                item.setFont(f)
+
+    def set_bold(self, bold: bool):
+        for item in self._scene.selectedItems():
+            if isinstance(item, TextItem):
+                f = item.font()
+                f.setBold(bold)
+                item.setFont(f)
+
+    def set_italic(self, italic: bool):
+        for item in self._scene.selectedItems():
+            if isinstance(item, TextItem):
+                f = item.font()
+                f.setItalic(italic)
+                item.setFont(f)
+
+    def selected_text_item(self) -> TextItem | None:
+        """Devuelve el primer TextItem seleccionado, o None."""
+        for item in self._scene.selectedItems():
+            if isinstance(item, TextItem):
+                return item
+        return None
 
     # ------------------------------------------------------------------ #
     #  Páginas
@@ -142,6 +207,11 @@ class ExamCanvas(QGraphicsView):
         self._scene.add_page()
         new_page_top = self._scene.page_top(self._scene.num_pages - 1)
         self.ensureVisible(0, new_page_top, ExamScene.PAGE_W, ExamScene.PAGE_H, 40, 40)
+
+    def delete_page(self, page_index: int):
+        """Elimina la página indicada y sus elementos."""
+        self._scene.delete_page(page_index)
+        self.viewport().update()
 
     # ------------------------------------------------------------------ #
     #  Nuevo examen
@@ -163,15 +233,13 @@ class ExamCanvas(QGraphicsView):
             self._update_window_title(None)
 
     # ------------------------------------------------------------------ #
-    #  Guardar como PDF (flujo principal — Ctrl+S)
+    #  Guardar PDF
     # ------------------------------------------------------------------ #
 
     def save_pdf(self):
-        """Siempre pregunta dónde guardar el PDF."""
         self.save_pdf_as()
 
     def save_pdf_as(self):
-        """Siempre abre el diálogo para elegir dónde guardar."""
         path, _ = QFileDialog.getSaveFileName(
             self, "Guardar como PDF", "",
             "Archivo PDF (*.pdf);;Todos los archivos (*)",
@@ -182,22 +250,19 @@ class ExamCanvas(QGraphicsView):
             path += ".pdf"
 
         if self._render_pdf(path):
-            # Guardar también el .exambox junto al PDF, sin mensajes extra
             exambox_path = path.replace(".pdf", ".exambox")
             self._write_exambox(exambox_path, silent=True)
             self._current_file = path
             self._update_window_title(path)
+            # Registrar en recientes
+            self.window()._recent_files.add(exambox_path)
+            self.window()._rebuild_recent_menu()
             QMessageBox.information(
                 self, "PDF guardado",
-                f"PDF guardado en:\n{path}\n\nProyecto editable guardado en:\n{exambox_path}"
+                f"PDF guardado en:\n{path}\n\nProyecto editable guardado en:\n{exambox_path}",
             )
 
-    def _write_pdf(self, path: str):
-        """Renderiza el PDF sin tocar el estado de la app (usado por imprimir)."""
-        self._render_pdf(path)
-
     def _render_pdf(self, path: str) -> bool:
-        """Renderiza todas las hojas en un PDF. Devuelve True si tuvo éxito."""
         writer = QPdfWriter(path)
         writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
         writer.setResolution(150)
@@ -212,50 +277,37 @@ class ExamCanvas(QGraphicsView):
             item.setSelected(False)
 
         target = QRectF(0, 0, writer.width(), writer.height())
-
         for i in range(self._scene.num_pages):
             if i > 0:
                 writer.newPage()
-            source = self._scene.page_rect(i)
-            self._scene.render(painter, target, source)
+            self._scene.render(painter, target, self._scene.page_rect(i))
 
         painter.end()
-
         for item in selected:
             item.setSelected(True)
-
         return True
 
+    # ------------------------------------------------------------------ #
+    #  Imprimir
+    # ------------------------------------------------------------------ #
+
     def print_exam(self):
-        """
-        Genera un PDF temporal y lo abre con el visor de Windows,
-        que incluye botón de imprimir. Evita usar QtPrintSupport.
-        """
         import tempfile
         import subprocess
-
-        # Crear PDF temporal en la carpeta temp del sistema
-        tmp = tempfile.NamedTemporaryFile(
-            suffix=".pdf", prefix="ExamBox_print_", delete=False
-        )
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", prefix="ExamBox_print_", delete=False)
         tmp_path = tmp.name
         tmp.close()
-
-        # Renderizar el PDF temporal
-        self._write_pdf(tmp_path)
-
-        # Abrir con el visor de PDF predeterminado de Windows
-        try:
-            subprocess.Popen(["start", "", tmp_path], shell=True)
-        except Exception as e:
-            QMessageBox.critical(self, "Error al imprimir", f"No se pudo abrir el PDF:\n{e}")
+        if self._render_pdf(tmp_path):
+            try:
+                subprocess.Popen(["start", "", tmp_path], shell=True)
+            except Exception as e:
+                QMessageBox.critical(self, "Error al imprimir", f"No se pudo abrir el PDF:\n{e}")
 
     # ------------------------------------------------------------------ #
-    #  Guardar / cargar proyecto editable (.exambox)
+    #  Guardar / cargar proyecto (.exambox)
     # ------------------------------------------------------------------ #
 
     def save_project(self):
-        """Guarda en .exambox para poder editar después."""
         if self._current_file and self._current_file.endswith(".exambox"):
             self._write_exambox(self._current_file)
         else:
@@ -274,10 +326,6 @@ class ExamCanvas(QGraphicsView):
         self._write_exambox(path)
 
     def _write_exambox(self, path: str, silent: bool = False):
-        """
-        Serializa la escena en un .exambox.
-        silent=True: no muestra mensajes ni cambia el título (usado al guardar junto al PDF).
-        """
         data = {
             "version": self.FILE_VERSION,
             "num_pages": self._scene.num_pages,
@@ -285,21 +333,25 @@ class ExamCanvas(QGraphicsView):
         }
         for item in self._scene.items():
             try:
-                item_type = type(item).__name__
-                if item_type == "TextItem":
+                if isinstance(item, TextItem):
                     data["items"].append({
                         "type": "text",
                         "x": item.x(), "y": item.y(),
                         "width": item.textWidth(),
                         "text": item.toPlainText(),
+                        "font_family": item.font().family(),
                         "font_size": item.font().pointSize(),
+                        "bold": item.font().bold(),
+                        "italic": item.font().italic(),
+                        "locked": item.locked,
                     })
-                elif item_type == "ImageItem":
+                elif isinstance(item, ImageItem):
                     data["items"].append({
                         "type": "image",
                         "x": item.x(), "y": item.y(),
                         "width": item.img_width,
                         "height": item.img_height,
+                        "locked": item.locked,
                         "data": self._pixmap_to_base64(item.pixmap()),
                     })
             except Exception as e:
@@ -311,6 +363,9 @@ class ExamCanvas(QGraphicsView):
                 json.dump(data, f, ensure_ascii=False, indent=2)
             if not silent:
                 self._update_window_title(path)
+                # Registrar en recientes
+                self.window()._recent_files.add(path)
+                self.window()._rebuild_recent_menu()
                 QMessageBox.information(self, "Proyecto guardado", f"Guardado correctamente en:\n{path}")
         except Exception as e:
             QMessageBox.critical(self, "Error al guardar proyecto", str(e))
@@ -322,6 +377,13 @@ class ExamCanvas(QGraphicsView):
         )
         if not path:
             return
+        self._load_from_path(path)
+
+    def load_from_path(self, path: str):
+        """Carga un proyecto desde una ruta directa (usado por archivos recientes)."""
+        self._load_from_path(path)
+
+    def _load_from_path(self, path: str):
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -344,9 +406,14 @@ class ExamCanvas(QGraphicsView):
                     item = TextItem()
                     item.setPlainText(item_data["text"])
                     item.setTextWidth(item_data["width"])
-                    font = item.font()
-                    font.setPointSize(item_data.get("font_size", 12))
-                    item.setFont(font)
+                    f = QFont(
+                        item_data.get("font_family", "Arial"),
+                        item_data.get("font_size", 12)
+                    )
+                    f.setBold(item_data.get("bold", False))
+                    f.setItalic(item_data.get("italic", False))
+                    item.setFont(f)
+                    item.locked = item_data.get("locked", False)
                     item.setPos(item_data["x"], item_data["y"])
                     self._scene.addItem(item)
                 elif item_data["type"] == "image":
@@ -355,19 +422,39 @@ class ExamCanvas(QGraphicsView):
                         item = ImageItem(pixmap)
                         item.img_width = item_data["width"]
                         item.img_height = item_data["height"]
+                        item.locked = item_data.get("locked", False)
                         item.setPos(item_data["x"], item_data["y"])
                         self._scene.addItem(item)
             except Exception as e:
-                QMessageBox.warning(self, "Error al cargar elemento", str(e))       
-        
+                QMessageBox.warning(self, "Error al cargar elemento", str(e))
+
         self._current_file = path
         self._update_window_title(path)
 
-        # Forzar repintado completo de la escena
+        # Registrar en recientes
+        self.window()._recent_files.add(path)
+        self.window()._rebuild_recent_menu()
+
         self._scene.update()
         self.viewport().update()
-        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
         self.zoom_fit()
+
+    # ------------------------------------------------------------------ #
+    #  Autosave
+    # ------------------------------------------------------------------ #
+
+    def _autosave(self):
+        """Guarda automáticamente en AppData cada 2 minutos."""
+        import tempfile
+        appdata = os.environ.get("APPDATA", os.path.expanduser("~"))
+        folder = os.path.join(appdata, "ExamBox")
+        os.makedirs(folder, exist_ok=True)
+        autosave_path = os.path.join(folder, "autosave.exambox")
+        self._write_exambox(autosave_path, silent=True)
+        # Mostrar brevemente en la barra de estado
+        window = self.window()
+        if hasattr(window, "statusBar"):
+            window.statusBar().showMessage("✅ Autoguardado", 3000)
 
     # ------------------------------------------------------------------ #
     #  Sin superposición
@@ -388,13 +475,20 @@ class ExamCanvas(QGraphicsView):
             for i, item_a in enumerate(items):
                 rect_a = item_a.sceneBoundingRect()
                 for item_b in items[i + 1:]:
+                    # Nunca empujar un item bloqueado — en su lugar empujar item_b hacia abajo
                     rect_b = item_b.sceneBoundingRect()
                     h_overlap = rect_a.right() > rect_b.left() and rect_a.left() < rect_b.right()
                     v_overlap = rect_a.bottom() > rect_b.top()
                     if h_overlap and v_overlap:
                         push = rect_a.bottom() - rect_b.top() + MARGIN
                         if push > 0:
-                            item_b.setPos(item_b.x(), item_b.y() + push)
+                            # Si item_a está bloqueado, empujar item_b hacia abajo
+                            # Si item_b está bloqueado, empujar item_a hacia arriba
+                            # Si ninguno está bloqueado, empujar el de abajo (item_b)
+                            if getattr(item_b, "locked", False):
+                                item_a.setPos(item_a.x(), item_a.y() - push)
+                            else:
+                                item_b.setPos(item_b.x(), item_b.y() + push)
                             any_moved = True
             if not any_moved:
                 break

@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QGraphicsItem
-from PyQt6.QtGui import QPen, QBrush, QColor, QPixmap, QPainterPath
+from PyQt6.QtGui import QPen, QBrush, QColor, QPixmap, QPainterPath, QFont
 from PyQt6.QtCore import Qt, QRectF, QPointF
 
 HANDLE_SIZE = 14
@@ -7,13 +7,6 @@ MIN_SIZE = 40.0
 
 
 class ImageItem(QGraphicsItem):
-    """
-    Caja de imagen movible y redimensionable.
-
-    - Clic y arrastra: mover.
-    - Seleccionar → arrastra el triángulo azul (esquina inf-der): redimensionar.
-    """
-
     def __init__(self, pixmap: QPixmap, parent=None):
         super().__init__(parent)
 
@@ -26,8 +19,8 @@ class ImageItem(QGraphicsItem):
         self._resize_start: QPointF | None = None
         self._orig_w = self.img_width
         self._orig_h = self.img_height
-
         self._drag_start: QPointF | None = None
+        self._locked = False
 
         self.setFlags(
             QGraphicsItem.GraphicsItemFlag.ItemIsMovable
@@ -37,7 +30,22 @@ class ImageItem(QGraphicsItem):
         self.setAcceptHoverEvents(True)
 
     # ------------------------------------------------------------------ #
-    #  Acceso al pixmap (necesario para guardar en JSON)
+    #  Bloqueo
+    # ------------------------------------------------------------------ #
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
+
+    @locked.setter
+    def locked(self, value: bool):
+        self._locked = value
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, not value)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, not value)
+        self.update()
+
+    # ------------------------------------------------------------------ #
+    #  Acceso al pixmap
     # ------------------------------------------------------------------ #
 
     def pixmap(self) -> QPixmap:
@@ -74,7 +82,16 @@ class ImageItem(QGraphicsItem):
         img_rect = self._image_rect()
         painter.drawPixmap(img_rect.toRect(), self._pixmap)
 
-        if self.isSelected():
+        if self._locked:
+            # Overlay semitransparente amarillo y borde naranja
+            painter.fillRect(img_rect, QColor(255, 200, 100, 40))
+            painter.setPen(QPen(QColor("#E0A000"), 1.5, Qt.PenStyle.DotLine))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(img_rect)
+            painter.setPen(QPen(QColor("#E0A000"), 1))
+            painter.setFont(QFont("Arial", 10))
+            painter.drawText(img_rect.adjusted(4, 4, -4, -4), Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight, "🔒")
+        elif self.isSelected():
             pen = QPen(QColor("#4A90D9"), 1.5, Qt.PenStyle.DashLine)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -92,7 +109,9 @@ class ImageItem(QGraphicsItem):
     # ------------------------------------------------------------------ #
 
     def hoverMoveEvent(self, event):
-        if self.isSelected() and self._on_handle(event.pos()):
+        if self._locked:
+            self.setCursor(Qt.CursorShape.ForbiddenCursor)
+        elif self.isSelected() and self._on_handle(event.pos()):
             self.setCursor(Qt.CursorShape.SizeFDiagCursor)
         else:
             self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -103,12 +122,14 @@ class ImageItem(QGraphicsItem):
         super().hoverLeaveEvent(event)
 
     # ------------------------------------------------------------------ #
-    #  Ratón — mover y redimensionar con Undo
+    #  Ratón
     # ------------------------------------------------------------------ #
 
     def mousePressEvent(self, event):
+        if self._locked:
+            event.ignore()
+            return
         if self.isSelected() and self._on_handle(event.pos()):
-            # Iniciar redimensión
             self._resizing = True
             self._resize_start = event.pos()
             self._orig_w = self.img_width
@@ -116,7 +137,6 @@ class ImageItem(QGraphicsItem):
             self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
             event.accept()
         else:
-            # Iniciar movimiento
             self._resizing = False
             self._drag_start = self.pos()
             self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -137,13 +157,9 @@ class ImageItem(QGraphicsItem):
 
     def mouseReleaseEvent(self, event):
         if self._resizing:
-            # Guardar el resize en el undo stack si cambió el tamaño
             if self.scene() and (self.img_width != self._orig_w or self.img_height != self._orig_h):
                 from canvas.commands import ResizeImageCommand
-                cmd = ResizeImageCommand(
-                    self, self._orig_w, self._orig_h,
-                    self.img_width, self.img_height
-                )
+                cmd = ResizeImageCommand(self, self._orig_w, self._orig_h, self.img_width, self.img_height)
                 self.scene().undo_stack.push(cmd)
                 self.scene().item_moved.emit(self)
             self._resizing = False
@@ -151,7 +167,6 @@ class ImageItem(QGraphicsItem):
             event.accept()
         else:
             super().mouseReleaseEvent(event)
-            # Guardar el movimiento en el undo stack si cambió la posición
             if self._drag_start is not None and self.scene():
                 new_pos = self.pos()
                 if new_pos != self._drag_start:
