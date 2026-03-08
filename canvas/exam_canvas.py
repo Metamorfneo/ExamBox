@@ -360,6 +360,11 @@ class ExamCanvas(QGraphicsView):
             except Exception as e:
                 QMessageBox.warning(self, "Error al cargar elemento", str(e))
 
+        QMessageBox.information(self , "Debug",
+                                f"items en json: {len(data.get('items', []))}\n"
+                                f"items en escena: {len(self._scene.items())}"
+                                )        
+        
         self._current_file = path
         self._update_window_title(path)
 
