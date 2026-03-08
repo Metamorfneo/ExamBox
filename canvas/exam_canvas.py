@@ -339,26 +339,35 @@ class ExamCanvas(QGraphicsView):
             self._scene.add_page()
 
         for item_data in data.get("items", []):
-            if item_data["type"] == "text":
-                item = TextItem()
-                item.setPlainText(item_data["text"])
-                item.setTextWidth(item_data["width"])
-                font = item.font()
-                font.setPointSize(item_data.get("font_size", 12))
-                item.setFont(font)
-                item.setPos(item_data["x"], item_data["y"])
-                self._scene.addItem(item)
-            elif item_data["type"] == "image":
-                pixmap = self._base64_to_pixmap(item_data["data"])
-                if not pixmap.isNull():
-                    item = ImageItem(pixmap)
-                    item.img_width = item_data["width"]
-                    item.img_height = item_data["height"]
+            try:
+                if item_data["type"] == "text":
+                    item = TextItem()
+                    item.setPlainText(item_data["text"])
+                    item.setTextWidth(item_data["width"])
+                    font = item.font()
+                    font.setPointSize(item_data.get("font_size", 12))
+                    item.setFont(font)
                     item.setPos(item_data["x"], item_data["y"])
                     self._scene.addItem(item)
+                elif item_data["type"] == "image":
+                    pixmap = self._base64_to_pixmap(item_data["data"])
+                    if not pixmap.isNull():
+                        item = ImageItem(pixmap)
+                        item.img_width = item_data["width"]
+                        item.img_height = item_data["height"]
+                        item.setPos(item_data["x"], item_data["y"])
+                        self._scene.addItem(item)
+            except Exception as e:
+                QMessageBox.warning(self, "Error al cargar elemento", str(e))
 
         self._current_file = path
         self._update_window_title(path)
+
+        # Forzar repintado completo de la escena
+        self._scene.update()
+        self.viewport().update()
+        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self.zoom_fit()
 
     # ------------------------------------------------------------------ #
     #  Sin superposición
