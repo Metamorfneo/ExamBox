@@ -507,7 +507,9 @@ class ExamCanvas(QGraphicsView):
     def zoom_fit(self):
         self.resetTransform()
         self._zoom_level = 1.0
-        self.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        # Encajar solo la hoja A4, no toda la escena con márgenes
+        page = self._scene.page_rect(0)
+        self.fitInView(page, Qt.AspectRatioMode.KeepAspectRatio)
 
     # ------------------------------------------------------------------ #
     #  Eventos
@@ -529,9 +531,14 @@ class ExamCanvas(QGraphicsView):
             super().keyPressEvent(event)
 
     def wheelEvent(self, event):
-        delta = event.angleDelta().y()
-        factor = 1.15 if delta > 0 else 1 / 1.15
-        self.zoom_by(factor)
+        # Ctrl + rueda → zoom
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            factor = 1.15 if delta > 0 else 1 / 1.15
+            self.zoom_by(factor)
+        else:
+            # Sin Ctrl → scroll normal
+            super().wheelEvent(event)
 
     # ------------------------------------------------------------------ #
     #  Helpers
